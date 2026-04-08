@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+    <title>Vehicle Dispatch</title>
+    <link rel="stylesheet" href="/MainPage.css">
+    <script src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=f4d0fbac89d0b4850d5f2270dcefd8d6&libraries=services"></script>
+</head>
+<body>
+<div class="container">
+    <h1>Vehicle Dispatch</h1>
+    <div id="map"></div>
+    <div class="coord-box">
+        <p>위도: <span id="latText" th:text="${lat}"></span></p>
+        <p>경도: <span id="lngText" th:text="${lng}"></span></p>
+    </div>
+    <hr>
+    <h3 class="section-title">위치 입력 방식 선택</h3>
+    <div class="radio-group">
+        <label>
+            <input type="radio" name="type" value="map" checked> 지도에서 선택
+        </label>
+        <label>
+            <input type="radio" name="type" value="address"> 주소 입력
+        </label>
+        <label>
+            <input type="radio" name="type" value="coord"> 위도/경도 입력
+        </label>
+    </div>
+
+    <!-- 주소 -->
+    <div id="addressSection" style="display:none;">
+        <input type="text" id="addressInput" placeholder="주소 입력">
+        <button type="button" onclick="searchAddress()">주소 검색</button>
+    </div>
+
+    <div id="coordSection" style="display:none;">
+        <input type="text" id="latManual" placeholder="위도 (예: 37.5665)">
+        <input type="text" id="lngManual" placeholder="경도 (예: 126.9780)">
+    </div>
+
+    <form action="/dispatch" method="post">
+        <input type="hidden" name="lat" id="latInput" th:value="${lat}">
+        <input type="hidden" name="lng" id="lngInput" th:value="${lng}">
+        <button class="main-btn">차량 호출</button>
+    </form>
+
+    <div th:if="${vehicle != null}" class="result-card">
+        <h3>배차 완료</h3>
+
+        <p>차량 번호</p>
+        <div class="highlight" th:text="${vehicle.vehicleNumber}"></div>
+
+        <p>기사 이름</p>
+        <div class="highlight" th:text="${vehicle.driverName}"></div>
+
+        <div id="eta" style="margin-top:10px; font-weight:bold;"></div>
+    </div>
+</div>
+<script th:inline="javascript">
+    let vehicles = [[${vehicles}]];
+    let selectedVehicle = [[${vehicle}]];
+    let userLatFromServer = [[${lat}]];
+    let userLngFromServer = [[${lng}]];
+</script>
+<script>
+    let map;
+    let geocoder;
+
+    function initMap() {
+
+        var container = document.getElementById('map');
+
+        var options = {
+            center: new kakao.maps.LatLng(37.5665, 126.9780),
+            level: 5
+        };
+
+        map = new kakao.maps.Map(container, options);
+        geocoder = new kakao.maps.services.Geocoder();
+
+        let selectedMarker = null;
+
+        vehicles.forEach(function(v) {
+
+            let pos = new kakao.maps.LatLng(v.latitude, v.longitude);
+            let marker;
+
+            if (selectedVehicle && v.id === selectedVehicle.id) {
+                marker = new kakao.maps.Marker({
+                    position: pos,
+                    image: new kakao.maps.MarkerImage(
+                        'https://t1.daumcdn.net/localimg/localimages/07/mapapidoc/markerStar.png',
+                        new kakao.maps.Size(24, 35)
+                    )
+                });
+                selectedMarker = marker;
+            } else {
+                marker = new kakao.maps.Marker({ position: pos });
+            }
+
+            marker.setMap(map);
+        });
+
+        if (selectedVehicle && selectedMarker && userLatFromServer && userLngFromServer) {
+
+            let carLat = selectedVehicle.latitude;
+            let carLng = selectedVehicle.longitude;
+
+            let userLat = parseFloat(userLatFromServer);
+            let userLng = parseFloat(userLngFromServer);
+
+            let carPos = new kakao.maps.LatLng(carLat, carLng);
+            let userPos = new kakao.maps.LatLng(userLat, userLng);
+
+            let userMarker = new kakao.maps.Marker({
+                position: userPos,
+                image: new kakao.maps.MarkerImage(
+                    'https://t1.daumcdn.net/localimg/localimages/07/mapapidoc/marker_blue.png',
+                    new kakao.maps.Size(24, 35)
+                )
+            });
+            userMarker.setMap(map);
+
+            let polyline = new kakao.maps.Polyline({
+                path: [carPos, userPos],
+                strokeWeight: 4,
+                strokeColor: '#2e7d32',
+                strokeOpacity: 0.8,
+                strokeStyle: 'solid'
+            });
+            polyline.setMap(map);
+
+            map.setCenter(carPos);
+            map.setLevel(4);
+
+            function getDistance(lat1, lng1, lat2, lng2) {
+                const R = 6371e3;
+                const toRad = deg => deg * Math.PI / 180;
+
+                let dLat = toRad(lat2 - lat1);
+                let dLng = toRad(lng2 - lng1);
+
+                let a =
+                    Math.sin(dLat/2) * Math.sin(dLat/2) +
+                    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+                    Math.sin(dLng/2) * Math.sin(dLng/2);
+
+                return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            }
+
+            let distance = getDistance(carLat, carLng, userLat, userLng);
+
+            let speed = 40000 / 3600;
+
+            let totalTimeSec = Math.round(distance / speed);
+            let remainingTime = totalTimeSec;
+
+            let latStep = (userLat - carLat) / totalTimeSec;
+            let lngStep = (userLng - carLng) / totalTimeSec;
+
+            function updateETA() {
+                let minutes = Math.floor(remainingTime / 60);
+                let seconds = remainingTime % 60;
+
+                let text = minutes > 0
+                    ? minutes + "분 " + seconds + "초"
+                    : seconds + "초";
+
+                document.getElementById("eta").innerText =
+                    "예상 도착 시간: " + text;
+            }
+
+            updateETA();
+
+            let lat = carLat;
+            let lng = carLng;
+
+            let interval = setInterval(() => {
+
+                lat += latStep;
+                lng += lngStep;
+
+                let newPos = new kakao.maps.LatLng(lat, lng);
+                selectedMarker.setPosition(newPos);
+
+                polyline.setPath([newPos, userPos]);
+
+                if (remainingTime > 0) {
+                    remainingTime--;
+                    updateETA();
+                }
+
+                if (remainingTime <= 0) {
+                    clearInterval(interval);
+
+                    selectedMarker.setPosition(userPos);
+
+                    document.getElementById("eta").innerText =
+                        "차량이 도착했습니다!";
+
+                    let blink = setInterval(() => {
+                        selectedMarker.setMap(null);
+                        setTimeout(() => selectedMarker.setMap(map), 300);
+                    }, 600);
+
+                    setTimeout(() => clearInterval(blink), 3000);
+                }
+
+            }, 1000);
+        }
+
+        kakao.maps.event.addListener(map, 'click', function(mouseEvent) {
+            let latlng = mouseEvent.latLng;
+
+            document.getElementById("latText").innerText = latlng.getLat();
+            document.getElementById("lngText").innerText = latlng.getLng();
+
+            document.getElementById("latInput").value = latlng.getLat();
+            document.getElementById("lngInput").value = latlng.getLng();
+        });
+    }
+
+    document.querySelectorAll('input[name="type"]').forEach(r => {
+        r.addEventListener('change', function() {
+
+            document.getElementById("addressSection").style.display = "none";
+            document.getElementById("coordSection").style.display = "none";
+
+            if (this.value === "address") {
+                document.getElementById("addressSection").style.display = "block";
+            } else if (this.value === "coord") {
+                document.getElementById("coordSection").style.display = "block";
+            }
+        });
+    });
+
+    function searchAddress() {
+        let address = document.getElementById("addressInput").value;
+
+        geocoder.addressSearch(address, function(result, status) {
+            if (status === kakao.maps.services.Status.OK) {
+
+                let lat = result[0].y;
+                let lng = result[0].x;
+
+                map.setCenter(new kakao.maps.LatLng(lat, lng));
+
+                document.getElementById("latInput").value = lat;
+                document.getElementById("lngInput").value = lng;
+            }
+        });
+    }
+
+    document.querySelector("form").addEventListener("submit", function(e) {
+
+        let type = document.querySelector('input[name="type"]:checked').value;
+
+        if (type === "coord") {
+            let lat = parseFloat(document.getElementById("latManual").value);
+            let lng = parseFloat(document.getElementById("lngManual").value);
+
+            if (isNaN(lat) || isNaN(lng)) {
+                alert("좌표 입력 오류");
+                e.preventDefault();
+                return;
+            }
+
+            document.getElementById("latInput").value = lat;
+            document.getElementById("lngInput").value = lng;
+        }
+    });
+
+    window.onload = function() {
+        kakao.maps.load(initMap);
+    };
+</script>
+</body>
+</html>
